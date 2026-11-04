@@ -11,6 +11,9 @@ from logexport.push import push_pb2
 from logexport.resource import Resource, resource_from_id_and_category
 
 VERSION_LABEL_KEY: Final[str] = "__grafana_azure_logexport_version__"
+RESERVED_LABELS: Final[frozenset[str]] = frozenset(
+    {"job", "category", "resourceGroup", "resourceName", "resourceType", "type"}
+)
 
 
 def entry_from_event_record(
@@ -69,10 +72,23 @@ def stream_from_event_body(
     else:
         data = json.load(f)
 
-    for record in get_records(data):
+    records = list(get_records(data))
+    tags = config.tags
+    if tags is not None:
+        # One batched lookup for every resource in this event body.
+        tags.prefetch(r["resourceId"] for r in records if "resourceId" in r)
+
+    for record in records:
         # Each record should receive it's own unique timestamp.
         current_ts += 1
         resource, record_type, entry = entry_from_event_record(record, current_ts)
+
+        tag_labels: dict[str, str] = {}
+        if tags is not None and "resourceId" in record:
+            resource_tags = tags.tags_for(record["resourceId"])
+            for name, value in tags.config.metadata_for(resource_tags).items():
+                entry.structuredMetadata.add(name=name, value=value)
+            tag_labels = tags.config.labels_for(resource_tags)
 
         for i in config.filter.apply(record):
             updated = push_pb2.EntryAdapter()
@@ -80,7 +96,7 @@ def stream_from_event_body(
             updated.line = json.dumps(i)
 
             labels = create_labels_string(
-                resource, record_type, config.additional_labels
+                resource, record_type, config.additional_labels, tag_labels
             )
             stream = stream_index.setdefault(
                 labels, push_pb2.StreamAdapter(labels=labels)
@@ -118,6 +134,7 @@ def create_labels_string(
     resource: Resource,
     record_type: str | None,
     addional_labels: dict[str, str],
+    tag_labels: dict[str, str] | None = None,
 ) -> str:
     labels = 'job="integrations/azure-logexport"'
 
@@ -139,4 +156,16 @@ def create_labels_string(
     if record_type is not None:
         labels += f',type="{record_type}"'
 
+    if tag_labels:
+        reserved = RESERVED_LABELS | set(addional_labels)
+        for key, value in tag_labels.items():
+            # Never emit a duplicate label name; Loki rejects the whole push.
+            if key not in reserved:
+                labels += f',{key}="{escape_label_value(value)}"'
+
     return "{" + labels + "}"
+
+
+def escape_label_value(value: str) -> str:
+    """Escapes a value for use inside a quoted LogQL label value."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")

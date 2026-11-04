@@ -95,6 +95,34 @@
       "metadata": {
         "description": "The optional password to use for authentication with Loki."
       }
+    },
+    "resourceTags": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Look up the Azure tags of each log's source resource and attach them. Requires granting the function's managed identity Reader or Monitoring Reader on the subscriptions being logged (see the functionAppPrincipalId output)."
+      }
+    },
+    "resourceTagLabels": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Comma-separated tag names to promote to Loki stream labels, optionally renamed with tag:label (e.g. 'Environment:env,Owner:team'). Keep this short to limit stream cardinality."
+      }
+    },
+    "resourceTagMetadata": {
+      "type": "string",
+      "defaultValue": "*",
+      "metadata": {
+        "description": "Tags added as structured metadata: '*' for all, a comma-separated list, or 'none'."
+      }
+    },
+    "resourceTagsInheritResourceGroup": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Also merge in the resource group's tags (the resource's own tags take precedence)."
+      }
     }
   },
   "variables": {
@@ -203,6 +231,9 @@
       "name": "[parameters('functionAppName')]",
       "location": "[parameters('location')]",
       "kind": "functionapp,linux",
+      "identity": {
+        "type": "SystemAssigned"
+      },
       "properties": {
         "reserved": true,
         "httpsOnly": true,
@@ -264,6 +295,22 @@
             {
               "name": "EVENTHUB_CONNECTION",
               "value": "[listKeys(resourceId('Microsoft.EventHub/namespaces/eventhubs/authorizationRules', variables('eventHubNamespaceName'), variables('eventHubName'), variables('eventHubAuthorizationRuleName')),'2015-08-01').primaryConnectionString]"
+            },
+            {
+              "name": "RESOURCE_TAGS",
+              "value": "[string(parameters('resourceTags'))]"
+            },
+            {
+              "name": "RESOURCE_TAG_LABELS",
+              "value": "[parameters('resourceTagLabels')]"
+            },
+            {
+              "name": "RESOURCE_TAG_METADATA",
+              "value": "[parameters('resourceTagMetadata')]"
+            },
+            {
+              "name": "RESOURCE_TAGS_INHERIT_RESOURCE_GROUP",
+              "value": "[string(parameters('resourceTagsInheritResourceGroup'))]"
             }
           ]
         }
@@ -300,6 +347,10 @@
     "eventHubNamespace": {
       "type": "string",
       "value": "[variables('eventHubNamespaceName')]"
+    },
+    "functionAppPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2022-03-01', 'full').identity.principalId]"
     }
   }
 }

@@ -5,10 +5,11 @@ from typing import Final, List
 
 import azure.functions as func
 
-from logexport.config import get_additional_labels, get_filter
+from logexport.config import get_additional_labels, get_filter, get_tag_config
 from logexport.deserialize import Config, streams_from_events
 from logexport.loki import LokiClient
 from logexport.loki.client import LokiClientError
+from logexport.tags import TagResolver
 
 # Constants defining environment variables names
 EVENTHUB_NAME_VAR: Final[str] = "EVENTHUB_NAME"
@@ -26,6 +27,10 @@ loki_client = LokiClient(
     os.environ.get("LOKI_USERNAME"),
     os.environ.get("LOKI_PASSWORD"),
 )
+
+# Created once per worker so looked-up tags stay cached across invocations.
+_tag_config = get_tag_config()
+tag_resolver = TagResolver(_tag_config) if _tag_config.enabled else None
 
 if "EVENTHUB_NAME" not in os.environ:
     logging.error("EVENTHUB_NAME environment variable is not set")
@@ -53,6 +58,7 @@ def logexport(events: List[func.EventHubEvent], context: func.Context) -> None:
         config = Config(
             additional_labels=get_additional_labels(),
             filter=get_filter(),
+            tags=tag_resolver,
         )
         streams = streams_from_events((event.get_body() for event in events), config)
         logging.info(

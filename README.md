@@ -65,6 +65,44 @@ resource "azurerm_resource_group_template_deployment" "logexport" {
 Additional stream labels can be configured by setting environment variables with the prefix `ADDITIONAL_LABEL_`. For example,
 setting `ADDITIONAL_LABEL_cluster=dev` will add a label `cluster=dev` to all streams.
 
+### Azure Resource Tags
+
+Azure diagnostic and activity logs only contain the `resourceId` of the resource that emitted them, never its tags. With
+`RESOURCE_TAGS=true` the function looks up each resource's tags through
+[Azure Resource Graph](https://learn.microsoft.com/en-us/azure/governance/resource-graph/overview), caches them in
+memory, and attaches them to every entry. The log line itself is not modified.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `RESOURCE_TAGS` | `false` | Enables tag enrichment. |
+| `RESOURCE_TAG_METADATA` | `*` | Tags added as [structured metadata](https://grafana.com/docs/loki/latest/get-started/labels/structured-metadata/) named `tag_<key>`: `*` for all, a comma-separated list of tag keys, or `none`. |
+| `RESOURCE_TAG_METADATA_PREFIX` | `tag_` | Prefix for the structured metadata names. |
+| `RESOURCE_TAG_LABELS` | _(empty)_ | Comma-separated tag keys promoted to stream labels. Use `tag:label` to rename, e.g. `Environment:env,Owner:team`. |
+| `RESOURCE_TAGS_INHERIT_RESOURCE_GROUP` | `false` | Also merge in the resource group's tags. |
+| `RESOURCE_TAGS_CACHE_TTL_SECONDS` | `3600` | How long looked-up tags are cached. Tag changes show up after at most this long. |
+| `AZURE_CLIENT_ID` | _(unset)_ | Client ID of a user-assigned managed identity. The system-assigned identity is used when unset. |
+
+Tag keys are matched case-insensitively, and characters that are not valid in label names are replaced with `_`. Child
+resources such as SQL databases also get their parent resource's tags; on conflicts the more specific resource wins.
+
+Only promote low-cardinality tags (environment, team, cost centre) to labels: every distinct combination of label values
+creates a new Loki stream. Query everything else as structured metadata, e.g.
+`{job="integrations/azure-logexport"} | tag_Owner="team-data"`.
+
+**Permissions:** the function app needs a managed identity with `Reader` or `Monitoring Reader` on every subscription (or
+a management group) whose logs it receives. `Monitoring Reader` is the role the
+[Azure serverless metrics](https://grafana.com/docs/grafana-cloud/observe-and-act/monitor-infrastructure/monitor-cloud-provider/azure/collect-azure-serverless/)
+setup already requires, so one assignment can cover both. The ARM template is resource group scoped and cannot create
+this assignment itself; it enables a system-assigned identity and outputs its `functionAppPrincipalId`:
+
+```bash
+az role assignment create --assignee-object-id <functionAppPrincipalId> --assignee-principal-type ServicePrincipal \
+  --role Reader --scope /subscriptions/<subscription-id>
+```
+
+If a lookup fails (missing permission, throttling) a warning is logged, the records are shipped without tags, and the
+lookup is retried after 60 seconds.
+
 ### Record Processing and Filtering
 
 Each event record can be processed with [jq](https://jqlang.org/manual/) by defining the optional `JQ_PIPELINE` environment variable.
